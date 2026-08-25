@@ -2,10 +2,13 @@ name: Cinema Telegram Bot
 
 on:
   workflow_dispatch:
-  
+
 concurrency:
   group: cinema-telegram-bot
   cancel-in-progress: false
+
+permissions:
+  contents: write
 
 jobs:
   telegram:
@@ -30,3 +33,17 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python cinema_telegram.py
+
+      - name: Save Telegram state
+        run: |
+          if [ -f telegram_state.json ]; then
+            git config user.name "cinema-telegram-bot"
+            git config user.email "github-actions@users.noreply.github.com"
+
+            git add telegram_state.json
+
+            if ! git diff --cached --quiet; then
+              git commit -m "Update Telegram state"
+              git push
+            fi
+          fi
