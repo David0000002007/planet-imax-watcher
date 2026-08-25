@@ -1,4 +1,5 @@
 import json
+from collections import defaultdict
 from playwright.sync_api import sync_playwright
 
 
@@ -6,7 +7,6 @@ CINEMA_URL = (
     "https://www.planetcinema.co.il/"
     "cinemas/Rishon_Letziyon/1072"
 )
-
 
 captured = {
     "seatplan": None,
@@ -45,7 +45,6 @@ def click_wednesday(page):
             if box and box["y"] < 1000:
                 item.click(timeout=5000)
                 page.wait_for_timeout(3000)
-
                 print("Wednesday selected.")
                 return True
 
@@ -74,182 +73,233 @@ def find_imax_1330(page):
 
 
 def capture_response(response):
-    url = response.url
-
     try:
-        if "seatplanV2" in url:
-            print("\nCAPTURED SEATPLAN RESPONSE")
-            print(url)
-
+        if "seatplanV2" in response.url:
             captured["seatplan"] = response.json()
+            print("Seatplan captured.")
 
-        elif "seats-statusV2" in url:
-            print("\nCAPTURED SEAT STATUS RESPONSE")
-            print(url)
-
+        elif "seats-statusV2" in response.url:
             captured["status"] = response.json()
+            print("Seat status captured.")
 
     except Exception as exc:
-        print(
-            "Could not decode response:",
-            url,
-            exc,
-        )
+        print("Capture error:", exc)
 
 
-def summarize(value, depth=0, max_depth=5):
-    indent = "  " * depth
+def print_status_summary():
+    print("\n")
+    print("=" * 70)
+    print("STATUS BY ROW")
+    print("=" * 70)
 
-    if depth > max_depth:
-        print(indent + "...")
+    if not captured["status"]:
+        print("NO STATUS")
         return
 
-    if isinstance(value, dict):
-        print(
-            indent
-            + "DICT keys: "
-            + ", ".join(map(str, value.keys()))
+    seats = captured["status"].get("seats", {})
+
+    rows = defaultdict(list)
+
+    for key, value in seats.items():
+        parts = key.split("_")
+
+        if len(parts) != 3:
+            continue
+
+        try:
+            section = int(parts[0])
+            seat = int(parts[1])
+            row = int(parts[2])
+        except ValueError:
+            continue
+
+        rows[row].append(
+            {
+                "seat": seat,
+                "value": value,
+                "section": section,
+            }
         )
 
-        for key, child in value.items():
-            print(indent + f"[{key}]")
-
-            summarize(
-                child,
-                depth + 1,
-                max_depth,
-            )
-
-    elif isinstance(value, list):
-        print(
-            indent
-            + f"LIST length={len(value)}"
+    for row in sorted(rows):
+        items = sorted(
+            rows[row],
+            key=lambda x: x["seat"],
         )
 
-        for i, child in enumerate(value[:3]):
-            print(indent + f"sample[{i}]")
-
-            summarize(
-                child,
-                depth + 1,
-                max_depth,
-            )
-
-    else:
-        print(
-            indent
-            + repr(value)[:300]
-        )
-
-
-def find_seat_records(value, found=None):
-    if found is None:
-        found = []
-
-    if len(found) >= 40:
-        return found
-
-    if isinstance(value, dict):
-        keys = {
-            str(key).lower()
-            for key in value.keys()
-        }
-
-        seat_words = [
-            "seat",
-            "row",
-            "column",
-            "number",
-            "position",
-            "status",
-            "available",
-            "occupied",
+        seats_in_row = [
+            x["seat"]
+            for x in items
         ]
 
-        score = sum(
-            any(word in key for key in keys)
-            for word in seat_words
+        values = sorted(
+            set(
+                str(x["value"])
+                for x in items
+            )
         )
 
-        if score >= 2:
-            found.append(value)
-
-        for child in value.values():
-            find_seat_records(
-                child,
-                found,
-            )
-
-    elif isinstance(value, list):
-        for child in value:
-            find_seat_records(
-                child,
-                found,
-            )
-
-    return found
-
-
-def print_results():
-    print("\n\n")
-    print("=" * 70)
-    print("SEATPLAN STRUCTURE")
-    print("=" * 70)
-
-    if captured["seatplan"] is None:
-        print("NO SEATPLAN CAPTURED")
-    else:
-        summarize(
-            captured["seatplan"],
-            max_depth=4,
+        print(
+            f"ROW {row}: "
+            f"{seats_in_row}"
         )
 
-        candidates = find_seat_records(
+        print(
+            f"STATUS VALUES: {values}"
+        )
+
+
+def print_raw_rows():
+    print("\n")
+    print("=" * 70)
+    print("RAW SEATPLAN ROWS")
+    print("=" * 70)
+
+    try:
+        rows = (
             captured["seatplan"]
+            ["S"]["1"]["G"]["0"]["R"]
         )
+    except Exception as exc:
+        print(
+            "Could not reach "
+            "S -> 1 -> G -> 0 -> R"
+        )
+        print(exc)
 
-        print("\n")
-        print("=" * 70)
-        print("SEATPLAN CANDIDATE RECORDS")
-        print("=" * 70)
-
+        print("\nFULL SEATPLAN:")
         print(
             json.dumps(
-                candidates[:30],
+                captured["seatplan"],
                 ensure_ascii=False,
                 indent=2,
             )
         )
+        return
 
-    print("\n\n")
-    print("=" * 70)
-    print("SEAT STATUS STRUCTURE")
-    print("=" * 70)
+    print("TYPE:", type(rows).__name__)
 
-    if captured["status"] is None:
-        print("NO STATUS CAPTURED")
+    if isinstance(rows, dict):
+        print(
+            "ROW KEYS:",
+            list(rows.keys()),
+        )
+
+        for key, value in rows.items():
+            print("\n")
+            print("-" * 70)
+            print(f"ROW KEY: {key}")
+            print("-" * 70)
+
+            print(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+
+    elif isinstance(rows, list):
+        print(
+            f"NUMBER OF ROWS: {len(rows)}"
+        )
+
+        for index, value in enumerate(rows):
+            print("\n")
+            print("-" * 70)
+            print(f"ROW INDEX: {index}")
+            print("-" * 70)
+
+            print(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+
     else:
-        summarize(
-            captured["status"],
-            max_depth=4,
-        )
-
-        candidates = find_seat_records(
-            captured["status"]
-        )
-
-        print("\n")
-        print("=" * 70)
-        print("STATUS CANDIDATE RECORDS")
-        print("=" * 70)
-
         print(
             json.dumps(
-                candidates[:40],
+                rows,
                 ensure_ascii=False,
                 indent=2,
             )
         )
+
+
+def inspect_dom(page):
+    print("\n")
+    print("=" * 70)
+    print("SEAT DOM SAMPLE")
+    print("=" * 70)
+
+    try:
+        result = page.evaluate(
+            """
+            () => {
+                const nodes = Array.from(
+                    document.querySelectorAll("*")
+                );
+
+                return nodes
+                    .filter(el => {
+                        const cls =
+                            (el.className || "").toString();
+
+                        const aria =
+                            el.getAttribute("aria-label") || "";
+
+                        const id =
+                            el.id || "";
+
+                        return (
+                            cls.toLowerCase().includes("seat") ||
+                            aria.toLowerCase().includes("seat") ||
+                            id.toLowerCase().includes("seat")
+                        );
+                    })
+                    .slice(0, 80)
+                    .map(el => ({
+                        tag: el.tagName,
+                        id: el.id || null,
+                        class:
+                            (el.className || "").toString(),
+                        aria:
+                            el.getAttribute("aria-label"),
+                        title:
+                            el.getAttribute("title"),
+                        data:
+                            Array.from(el.attributes)
+                                .filter(a =>
+                                    a.name.startsWith("data-")
+                                )
+                                .reduce(
+                                    (obj, a) => {
+                                        obj[a.name] = a.value;
+                                        return obj;
+                                    },
+                                    {}
+                                ),
+                        text:
+                            (el.innerText || "")
+                            .trim()
+                            .substring(0, 150)
+                    }));
+            }
+            """
+        )
+
+        print(
+            json.dumps(
+                result,
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+    except Exception as exc:
+        print("DOM inspection failed:", exc)
 
 
 def main():
@@ -292,65 +342,50 @@ def main():
 
         if target is None:
             print(
-                "Odyssey IMAX 13:30 "
-                "was not found."
+                "Odyssey IMAX 13:30 not found."
             )
-
             browser.close()
             return
 
-        print(
-            "Found Odyssey IMAX 13:30."
-        )
+        print("Found Odyssey IMAX 13:30.")
 
         target.click(timeout=5000)
-
         page.wait_for_timeout(2000)
 
-        guest_buttons = page.get_by_text(
+        options = page.get_by_text(
             "הזמינו כאורח",
             exact=True,
         )
 
         guest = None
 
-        for i in range(
-            guest_buttons.count()
-        ):
+        for i in range(options.count()):
             try:
-                candidate = (
-                    guest_buttons.nth(i)
-                )
+                candidate = options.nth(i)
 
                 if candidate.is_visible():
                     guest = candidate
                     break
-
             except Exception:
                 continue
 
         if guest is None:
-            print(
-                "Guest order button "
-                "was not found."
-            )
-
+            print("Guest button not found.")
             browser.close()
             return
 
-        print(
-            "Clicking guest order..."
-        )
+        print("Clicking guest order...")
 
         guest.click(timeout=5000)
 
-        # Wait for the ticket system and seat APIs.
         page.wait_for_timeout(12000)
 
-        print("\nFINAL PAGE:")
+        print("\nFINAL URL:")
         print(page.url)
 
-        print_results()
+        print_status_summary()
+        print_raw_rows()
+        inspect_dom(page)
 
         browser.close()
 
