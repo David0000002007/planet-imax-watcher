@@ -47,6 +47,51 @@ def click_wednesday(page):
     return False
 
 
+def find_imax_1330(page):
+    buttons = page.locator(
+        'a[data-url][data-attrs*="imax"]'
+    )
+
+    for i in range(buttons.count()):
+        try:
+            button = buttons.nth(i)
+            text = button.inner_text().strip()
+
+            if "13:30" in text:
+                return button
+
+        except Exception:
+            continue
+
+    return None
+
+
+def print_page_info(page, name):
+    print("\n================================")
+    print(name)
+    print("URL:")
+    print(page.url)
+
+    print("\nTITLE:")
+    try:
+        print(page.title())
+    except Exception:
+        pass
+
+    print("\nBODY:")
+    try:
+        body = page.locator("body").inner_text()
+        print(body[:12000])
+    except Exception as exc:
+        print("BODY ERROR:", exc)
+
+    print("\nIFRAMES:")
+    for frame in page.frames:
+        print("FRAME:", frame.url)
+
+    print("================================\n")
+
+
 def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -61,40 +106,48 @@ def main():
 
         page = context.new_page()
 
-        # Print useful network activity.
-        page.on(
-            "request",
-            lambda request: (
+        def log_request(request):
+            url = request.url.lower()
+
+            if any(
+                word in url
+                for word in [
+                    "order",
+                    "seat",
+                    "ticket",
+                    "booking",
+                    "performance",
+                    "session",
+                ]
+            ):
                 print(
                     "REQUEST:",
                     request.method,
                     request.url,
                 )
-                if (
-                    "order" in request.url.lower()
-                    or "ticket" in request.url.lower()
-                    or "seat" in request.url.lower()
-                )
-                else None
-            ),
-        )
 
-        page.on(
-            "response",
-            lambda response: (
+        def log_response(response):
+            url = response.url.lower()
+
+            if any(
+                word in url
+                for word in [
+                    "order",
+                    "seat",
+                    "ticket",
+                    "booking",
+                    "performance",
+                    "session",
+                ]
+            ):
                 print(
                     "RESPONSE:",
                     response.status,
                     response.url,
                 )
-                if (
-                    "order" in response.url.lower()
-                    or "ticket" in response.url.lower()
-                    or "seat" in response.url.lower()
-                )
-                else None
-            ),
-        )
+
+        context.on("request", log_request)
+        context.on("response", log_response)
 
         page.goto(
             CINEMA_URL,
@@ -110,84 +163,97 @@ def main():
             browser.close()
             return
 
-        print("Current URL before click:")
-        print(page.url)
-
-        # Find the exact Odyssey IMAX 13:30 button.
-        buttons = page.locator(
-            'a[data-url][data-attrs*="imax"]'
-        )
-
-        target = None
-
-        for i in range(buttons.count()):
-            button = buttons.nth(i)
-
-            try:
-                text = button.inner_text().strip()
-
-                if "13:30" in text:
-                    target = button
-                    break
-            except Exception:
-                continue
+        target = find_imax_1330(page)
 
         if target is None:
             print("IMAX 13:30 button not found.")
             browser.close()
             return
 
-        print("Found target button.")
+        print("Found Odyssey IMAX 13:30.")
         print(
-            "data-url:",
+            "ORDER DATA URL:",
             target.get_attribute("data-url"),
         )
 
-        print("Clicking IMAX 13:30...")
+        # Click the screening ONCE.
+        target.click(timeout=5000)
 
-        # The site may open a new tab/window.
-        try:
-            with context.expect_page(timeout=5000) as popup_info:
-                target.click()
+        page.wait_for_timeout(2500)
 
-            order_page = popup_info.value
-            order_page.wait_for_load_state(
-                "domcontentloaded",
-                timeout=30000,
+        print("\nAfter screening click:")
+        print(page.url)
+
+        # Planet should now display the login/guest modal.
+        guest = page.get_by_text(
+            "הזמינו כאורח",
+            exact=True,
+        )
+
+        if guest.count() == 0:
+            print("Guest-order button was not found.")
+            print_page_info(
+                page,
+                "PAGE AFTER SHOWING CLICK",
             )
+            browser.close()
+            return
 
-            print("NEW PAGE OPENED")
+        guest_button = None
 
-        except Exception:
-            # If no popup was created, continue with current page.
+        for i in range(guest.count()):
             try:
-                target.click(timeout=5000)
+                candidate = guest.nth(i)
+
+                if candidate.is_visible():
+                    guest_button = candidate
+                    break
+            except Exception:
+                continue
+
+        if guest_button is None:
+            print(
+                "Guest-order button exists "
+                "but is not visible."
+            )
+            browser.close()
+            return
+
+        print("Guest-order button found.")
+        print("Clicking 'הזמינו כאורח'...")
+
+        old_pages = len(context.pages)
+
+        guest_button.click(timeout=5000)
+
+        # Give Planet time to initialize the order.
+        page.wait_for_timeout(10000)
+
+        print(
+            "Number of pages before:",
+            old_pages,
+        )
+        print(
+            "Number of pages after:",
+            len(context.pages),
+        )
+
+        # Inspect every open page.
+        for index, current_page in enumerate(
+            context.pages
+        ):
+            try:
+                current_page.wait_for_load_state(
+                    "domcontentloaded",
+                    timeout=10000,
+                )
             except Exception:
                 pass
 
-            order_page = page
-
-        order_page.wait_for_timeout(8000)
-
-        print("\n==============================")
-        print("FINAL URL:")
-        print(order_page.url)
-
-        print("\nTITLE:")
-        print(order_page.title())
-
-        print("\nBODY TEXT:")
-        try:
-            body = order_page.locator("body").inner_text()
-            print(body[:8000])
-        except Exception as exc:
-            print("Could not read body:", exc)
-
-        print("\nIFRAMES:")
-        for frame in order_page.frames:
-            print("FRAME:", frame.url)
-
-        print("==============================")
+            print_page_info(
+                current_page,
+                f"OPEN PAGE #{index + 1}",
+            )
 
         browser.close()
 
