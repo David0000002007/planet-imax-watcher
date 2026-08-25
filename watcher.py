@@ -190,6 +190,11 @@ def get_imax_showings(page):
         attrs = item.get("attrs", "").lower()
         time = item.get("time")
         url = item.get("data_url")
+        if url:
+            url = url.replace(
+                "/api/order/",
+                "/order/",
+            )
 
         if (
             "imax" in attrs
