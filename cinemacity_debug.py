@@ -1,161 +1,128 @@
-import json
-from playwright.sync_api import sync_playwright
+from cinemacity import (
+    search_movies,
+    get_theaters,
+    get_showings,
+)
 
 
-BASE_URL = "https://www.cinema-city.co.il"
-
-# רק טקסט בדיקה.
-# בהמשך זה יגיע ישירות מהודעת Telegram.
-MOVIE_QUERY = "האודיסאה"
-
-
-def normalize(text):
-    if not text:
-        return ""
-
-    return (
-        str(text)
-        .strip()
-        .lower()
-        .replace('"', "")
-        .replace("'", "")
-        .replace("-", " ")
-    )
+MOVIE_NAME = "האודיסאה"
 
 
 def main():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True
+    print("=" * 70)
+    print("SEARCH MOVIE BY NAME")
+    print("=" * 70)
+
+    matches = search_movies(
+        MOVIE_NAME
+    )
+
+    print(
+        "Search:",
+        MOVIE_NAME
+    )
+
+    print(
+        "Matches:",
+        len(matches)
+    )
+
+    if not matches:
+        print(
+            "Movie not found."
+        )
+        return
+
+    for movie in matches:
+        print(
+            movie["Name"],
+            "| MovieId:",
+            movie["MovieId"],
         )
 
-        context = browser.new_context(
-            locale="he-IL"
+    # ההתאמה המדויקת אמורה
+    # להיות הראשונה.
+    movie = matches[0]
+
+    movie_id = movie["MovieId"]
+
+    print("\n")
+    print("=" * 70)
+    print("SELECTED MOVIE")
+    print("=" * 70)
+
+    print(
+        movie["Name"],
+        "| MovieId:",
+        movie_id,
+    )
+
+    print("\n")
+    print("=" * 70)
+    print("THEATERS")
+    print("=" * 70)
+
+    theaters = get_theaters(
+        movie_id
+    )
+
+    # לבדיקה כרגע מציגים
+    # את בתי הקולנוע הרגילים.
+    base_theaters = [
+        theater
+        for theater in theaters
+        if theater.get(
+            "VenueTypeId"
+        ) == 1
+    ]
+
+    print(
+        "Theaters:",
+        len(base_theaters)
+    )
+
+    for theater in base_theaters:
+        print(
+            "\n",
+            theater["Name"],
+            "|",
+            theater["TixTheatreId"],
         )
 
-        print("=" * 70)
-        print("MOVIES API")
-        print("=" * 70)
-
-        response = context.request.get(
-            f"{BASE_URL}/tickets/Movies"
+        showings = get_showings(
+            movie_id,
+            theater[
+                "TixTheatreId"
+            ],
         )
 
         print(
-            "HTTP:",
-            response.status,
+            "Showings:",
+            len(showings)
         )
 
-        print(
-            "Content-Type:",
-            response.headers.get(
-                "content-type"
-            ),
-        )
-
-        try:
-            movies = response.json()
-
-        except Exception:
+        # רק שלוש הקרנות ראשונות
+        # כדי שהפלט לא יהיה ענק.
+        for showing in showings[:3]:
             print(
-                "Response was not JSON:"
+                showing["date"],
+                "|",
+                showing["time"],
             )
 
             print(
-                response.text()[:3000]
+                showing["url"]
             )
 
-            browser.close()
-            return
+    print("\n")
+    print("=" * 70)
+    print("SUCCESS")
+    print("=" * 70)
 
-        print(
-            "Result type:",
-            type(movies).__name__,
-        )
-
-        if isinstance(movies, list):
-            print(
-                "Movie count:",
-                len(movies),
-            )
-
-        print("\n")
-        print("=" * 70)
-        print("SAMPLE MOVIES")
-        print("=" * 70)
-
-        if isinstance(movies, list):
-            for movie in movies[:10]:
-                print(
-                    json.dumps(
-                        movie,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                )
-
-        print("\n")
-        print("=" * 70)
-        print("SEARCH RESULT")
-        print("=" * 70)
-
-        query = normalize(
-            MOVIE_QUERY
-        )
-
-        matches = []
-
-        if isinstance(movies, list):
-            for movie in movies:
-                # אנחנו עדיין לא יודעים
-                # בדיוק איך Cinema City
-                # קורא לשדה שם הסרט,
-                # אז מחפשים בכל הערכים
-                # הטקסטואליים.
-                searchable = " ".join(
-                    normalize(value)
-                    for value
-                    in movie.values()
-                    if isinstance(
-                        value,
-                        (
-                            str,
-                            int,
-                            float,
-                        ),
-                    )
-                )
-
-                if query in searchable:
-                    matches.append(movie)
-
-        print(
-            "Query:",
-            MOVIE_QUERY,
-        )
-
-        print(
-            "Matches:",
-            len(matches),
-        )
-
-        for movie in matches[:20]:
-            print("\nMATCH:")
-
-            print(
-                json.dumps(
-                    movie,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-
-        print("\n")
-        print("=" * 70)
-        print("DONE")
-        print("=" * 70)
-
-        browser.close()
+    print(
+        "Cinema City module "
+        "works dynamically."
+    )
 
 
 if __name__ == "__main__":
