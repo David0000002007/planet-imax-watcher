@@ -8,12 +8,10 @@ from playwright.sync_api import sync_playwright
 
 
 CINEMA_URL = "https://www.planetcinema.co.il/cinemas/Rishon_Letziyon/1072"
-MOVIE_URL = "https://www.planetcinema.co.il/films/the-odyssey/7460s2r"
 
 MOVIE_TITLES = [
     "האודיסאה",
     "The Odyssey",
-    "ОДИССЕЯ",
 ]
 
 STATE_FILE = Path("state.json")
@@ -25,7 +23,7 @@ def send_telegram(message):
 
     if not token or not chat_id:
         print("Telegram secrets are missing.")
-        return False
+        return
 
     response = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -39,16 +37,16 @@ def send_telegram(message):
 
     response.raise_for_status()
     print("Telegram message sent successfully.")
-    return True
 
 
-def load_previous_state():
+def load_state():
     if not STATE_FILE.exists():
         return None
 
     try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return data.get("fingerprint")
+        return json.loads(
+            STATE_FILE.read_text(encoding="utf-8")
+        ).get("fingerprint")
     except Exception:
         return None
 
@@ -64,211 +62,159 @@ def save_state(fingerprint):
     )
 
 
-def extract_date(text):
-    patterns = [
-        r"(?:ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)\s+\d{1,2}/\d{1,2}/\d{4}",
-        r"\d{1,2}/\d{1,2}/\d{4}",
+def dismiss_cookies(page):
+    possible_buttons = [
+        "דחה את כל העוגיות",
+        "קבל את כל העוגיות",
+        "קבל את כל קבצי",
     ]
 
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(0)
+    for text in possible_buttons:
+        try:
+            button = page.get_by_text(text, exact=False)
+
+            if button.count() > 0 and button.first.is_visible():
+                button.first.click(timeout=3000)
+                page.wait_for_timeout(1000)
+                return
+        except Exception:
+            pass
+
+
+def select_imax(page):
+    print("Trying to select IMAX filter...")
+
+    # First try a normal HTML <select>
+    selects = page.locator("select")
+
+    for i in range(selects.count()):
+        try:
+            select = selects.nth(i)
+            options = select.locator("option").all_inner_texts()
+
+            for option in options:
+                if "IMAX" in option.upper():
+                    print(f"Found native IMAX option: {option}")
+
+                    select.select_option(label=option)
+
+                    page.wait_for_timeout(4000)
+
+                    print("IMAX filter selected.")
+                    return True
+
+        except Exception:
+            continue
+
+    # Planet may use a custom dropdown instead of <select>
+    try:
+        trigger = page.get_by_text(
+            "בחרו סוג הקרנה",
+            exact=True,
+        )
+
+        if trigger.count() == 0:
+            print("Format dropdown was not found.")
+            return False
+
+        trigger.first.click(timeout=5000)
+
+        page.wait_for_timeout(1000)
+
+        imax_options = page.get_by_text(
+            re.compile(r"^IMAX$", re.IGNORECASE)
+        )
+
+        for i in range(imax_options.count()):
+            option = imax_options.nth(i)
+
+            try:
+                if option.is_visible():
+                    print("Visible IMAX option found.")
+
+                    option.click(timeout=5000)
+
+                    page.wait_for_timeout(4000)
+
+                    print("IMAX filter selected.")
+                    return True
+
+            except Exception:
+                continue
+
+    except Exception as exc:
+        print(f"Could not open format filter: {exc}")
+
+    print("Could not safely select IMAX.")
+    return False
+
+
+def get_date(body_text):
+    match = re.search(
+        r"(?:ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)"
+        r"\s+\d{1,2}/\d{1,2}/\d{4}",
+        body_text,
+    )
+
+    if match:
+        return match.group(0)
 
     return "תאריך לא זוהה"
 
 
-def find_movie_cards(page):
-    results = []
-
-    for title in MOVIE_TITLES:
-        locator = page.get_by_text(title, exact=False)
-
-        try:
-            count = min(locator.count(), 15)
-        except Exception:
-            continue
-
-        for index in range(count):
-            try:
-                element = locator.nth(index)
-
-                data = element.evaluate(
-                    """
-                    (el) => {
-                        let current = el;
-
-                        for (let level = 0; level < 10 && current; level++) {
-                            const text = (current.innerText || "").trim();
-                            const html = current.outerHTML || "";
-
-                            const hasTime =
-                                /(?:[01]?\\d|2[0-3]):[0-5]\\d/.test(text);
-
-                            if (
-                                hasTime &&
-                                text.length >= 10 &&
-                                text.length <= 6000
-                            ) {
-                                const links = Array.from(
-                                    current.querySelectorAll("a")
-                                ).map(a => a.href).filter(Boolean);
-
-                                return {
-                                    text: text,
-                                    html: html.substring(0, 15000),
-                                    links: links
-                                };
-                            }
-
-                            current = current.parentElement;
-                        }
-
-                        return null;
-                    }
-                    """
-                )
-
-                if not data:
-                    continue
-
-                text = data["text"]
-                html = data["html"]
-
-                times = sorted(
-                    set(
-                        re.findall(
-                            r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b",
-                            text,
-                        )
-                    )
-                )
-
-                if not times:
-                    continue
-
-                # IMAX can appear as visible text, alt text,
-                # title attribute or CSS/data attribute.
-                imax_found = (
-                    "imax" in text.lower()
-                    or "imax" in html.lower()
-                )
-
-                results.append(
-                    {
-                        "title": title,
-                        "date": extract_date(
-                            page.locator("body").inner_text()
-                        ),
-                        "times": times,
-                        "imax": imax_found,
-                        "links": data.get("links", []),
-                        "preview": text[:1200],
-                    }
-                )
-
-            except Exception as exc:
-                print(f"Candidate parsing error: {exc}")
-                continue
-
-    return results
-
-
-def scan_page(page):
-    all_results = []
-
-    page.goto(
-        CINEMA_URL,
-        wait_until="domcontentloaded",
-        timeout=90000,
-    )
-
-    page.wait_for_timeout(8000)
-
-    body_text = page.locator("body").inner_text()
-
-    print("Page loaded.")
-    print(f"Body length: {len(body_text)}")
-
-    title_seen = any(
-        title.lower() in body_text.lower()
-        for title in MOVIE_TITLES
-    )
-
-    print(f"Odyssey title visible on page: {title_seen}")
-
-    if title_seen:
-        lower_text = body_text.lower()
-
-        for title in MOVIE_TITLES:
-            position = lower_text.find(title.lower())
-
-            if position != -1:
-                start = max(0, position - 500)
-                end = min(len(body_text), position + 1800)
-
-                print("\n--- ODYSSEY DEBUG PREVIEW ---")
-                print(body_text[start:end])
-                print("--- END DEBUG PREVIEW ---\n")
-                break
-
-    all_results.extend(find_movie_cards(page))
-
-    # Try the different day buttons in the weekly schedule.
-    day_labels = [
-        "היום",
-        "א׳",
-        "ב׳",
-        "ג׳",
-        "ד׳",
-        "ה׳",
-        "ו׳",
-        "ש׳",
+def find_odyssey_section(body_text):
+    lines = [
+        line.strip()
+        for line in body_text.splitlines()
+        if line.strip()
     ]
 
-    for label in day_labels:
-        try:
-            buttons = page.get_by_role(
-                "button",
-                name=label,
-                exact=True,
+    movie_index = None
+
+    for i, line in enumerate(lines):
+        if any(
+            title.lower() in line.lower()
+            for title in MOVIE_TITLES
+        ):
+            movie_index = i
+            break
+
+    if movie_index is None:
+        return None
+
+    section = [lines[movie_index]]
+
+    # Read only the local movie block.
+    for i in range(
+        movie_index + 1,
+        min(movie_index + 15, len(lines)),
+    ):
+        # A new movie normally has a title followed by
+        # "genre | xxx דקות". Stop before that new title.
+        if (
+            i + 1 < len(lines)
+            and re.search(
+                r"\|\s*\d+\s*דקות",
+                lines[i + 1],
             )
+        ):
+            break
 
-            if buttons.count() == 0:
-                continue
+        section.append(lines[i])
 
-            button = buttons.first
+    section_text = "\n".join(section)
 
-            if not button.is_visible():
-                continue
+    times = re.findall(
+        r"(?:[01]?\d|2[0-3]):[0-5]\d",
+        section_text,
+    )
 
-            print(f"Checking schedule tab: {label}")
+    times = sorted(set(times))
 
-            button.click(timeout=5000)
-            page.wait_for_timeout(2500)
-
-            all_results.extend(find_movie_cards(page))
-
-        except Exception as exc:
-            print(f"Could not check tab {label}: {exc}")
-            continue
-
-    return all_results, title_seen
-
-
-def clean_results(results):
-    unique = {}
-
-    for result in results:
-        key = (
-            result["date"],
-            tuple(result["times"]),
-            result["imax"],
-        )
-
-        unique[key] = result
-
-    return list(unique.values())
+    return {
+        "text": section_text,
+        "times": times,
+    }
 
 
 def main():
@@ -293,110 +239,125 @@ def main():
             locale="he-IL",
         )
 
-        results, title_seen = scan_page(page)
+        page.goto(
+            CINEMA_URL,
+            wait_until="domcontentloaded",
+            timeout=90000,
+        )
+
+        page.wait_for_timeout(6000)
+
+        dismiss_cookies(page)
+
+        imax_selected = select_imax(page)
+
+        if not imax_selected:
+            browser.close()
+
+            print(
+                "IMAX filter could not be selected. "
+                "Stopping to avoid a false alert."
+            )
+
+            if manual_run:
+                send_telegram(
+                    "⚠️ בדיקת הבוט הסתיימה, "
+                    "אבל לא הצלחתי לבחור את מסנן IMAX "
+                    "באתר Planet.\n\n"
+                    "לא נשלחה התראת כרטיסים כדי "
+                    "להימנע מהתראת שווא."
+                )
+
+            return
+
+        body_text = page.locator("body").inner_text()
+
+        print("\n--- PAGE AFTER IMAX FILTER ---")
+        print(body_text[:5000])
+        print("--- END PAGE ---\n")
+
+        date = get_date(body_text)
+
+        result = find_odyssey_section(body_text)
 
         browser.close()
 
-    results = clean_results(results)
-
-    imax_results = [
-        result
-        for result in results
-        if result["imax"]
-    ]
-
-    print(f"Movie cards found: {len(results)}")
-    print(f"IMAX movie cards found: {len(imax_results)}")
-
-    for result in results:
+    if not result:
         print(
-            "RESULT:",
-            result["date"],
-            result["times"],
-            "IMAX =", result["imax"],
+            "The Odyssey is NOT visible "
+            "after selecting IMAX."
         )
-        print(result["preview"])
-        print("--------------------")
 
-    # Manual GitHub run = always send a Telegram test
-    if manual_run:
-        if imax_results:
-            lines = []
-
-            for result in imax_results:
-                lines.append(
-                    f"📅 {result['date']}\n"
-                    f"🕐 {', '.join(result['times'])}"
-                )
-
-            message = (
-                "✅ בדיקת הבוט הצליחה!\n\n"
-                "🎬 נמצאו הקרנות אפשריות של "
-                "האודיסאה ב-IMAX בראשון לציון:\n\n"
-                + "\n\n".join(lines)
-                + "\n\n🎟️ "
-                + CINEMA_URL
+        if manual_run:
+            send_telegram(
+                "✅ בדיקת הבוט הצליחה.\n\n"
+                "🎬 מסנן IMAX הופעל בהצלחה.\n"
+                "כרגע האודיסאה לא מופיעה "
+                "בלוח ה-IMAX שנבדק."
             )
 
-        elif title_seen:
-            message = (
-                "✅ החיבור לטלגרם עובד!\n\n"
-                "🎬 הבוט מצא את האודיסאה "
-                "בלוח של פלאנט ראשון לציון,\n"
-                "אבל כרגע לא זיהה הקרנת IMAX "
-                "בתוך כרטיס ההקרנה.\n\n"
-                "אנחנו ממשיכים לכייל את הזיהוי."
-            )
-
-        else:
-            message = (
-                "✅ החיבור לטלגרם עובד!\n\n"
-                "🔎 הסריקה של פלאנט הסתיימה,\n"
-                "אבל האודיסאה לא הופיעה כרגע "
-                "בלוח ההקרנות שהאתר הציג לבוט."
-            )
-
-        send_telegram(message)
-
-    if not imax_results:
-        print("No Odyssey IMAX screening card detected.")
         return
 
-    fingerprint_data = json.dumps(
-        imax_results,
+    times = result["times"]
+
+    print("ODYSSEY IMAX SECTION:")
+    print(result["text"])
+    print("Times:", times)
+
+    if not times:
+        print(
+            "The Odyssey was visible after "
+            "IMAX filtering, but no showtime "
+            "was detected."
+        )
+
+        if manual_run:
+            send_telegram(
+                "✅ מסנן IMAX עובד והאודיסאה "
+                "נמצאה, אבל עדיין לא זוהתה "
+                "שעת הקרנה."
+            )
+
+        return
+
+    fingerprint_source = json.dumps(
+        {
+            "date": date,
+            "times": times,
+        },
         ensure_ascii=False,
         sort_keys=True,
     )
 
     fingerprint = hashlib.sha256(
-        fingerprint_data.encode("utf-8")
+        fingerprint_source.encode("utf-8")
     ).hexdigest()
 
-    previous = load_previous_state()
+    previous = load_state()
 
-    if fingerprint == previous:
-        print("No change since previous check.")
-        return
+    message = (
+        "🎬 נמצאה הקרנת IMAX של האודיסאה "
+        "בפלאנט ראשון לציון!\n\n"
+        f"📅 {date}\n"
+        f"🕐 {', '.join(times)}\n\n"
+        "🎟️ לצפייה והזמנה:\n"
+        f"{CINEMA_URL}"
+    )
 
-    # For scheduled runs, alert only when something changes.
-    if not manual_run:
-        lines = []
-
-        for result in imax_results:
-            lines.append(
-                f"📅 {result['date']}\n"
-                f"🕐 {', '.join(result['times'])}"
-            )
-
+    if manual_run:
         send_telegram(
-            "🚨 נמצאה הקרנת IMAX חדשה "
-            "של האודיסאה!\n\n"
-            + "\n\n".join(lines)
-            + "\n\n🎟️ להזמנה:\n"
-            + CINEMA_URL
+            "✅ בדיקת הבוט הצליחה!\n\n"
+            + message
         )
 
-    save_state(fingerprint)
+    elif fingerprint != previous:
+        send_telegram(
+            "🚨 הקרנת IMAX חדשה!\n\n"
+            + message
+        )
+
+    if fingerprint != previous:
+        save_state(fingerprint)
 
     print("Scan completed successfully.")
 
