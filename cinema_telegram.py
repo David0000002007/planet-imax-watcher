@@ -1,6 +1,9 @@
 import os
 import re
+import json
 import requests
+
+from pathlib import Path
 
 from cinemacity import (
     search_movies,
@@ -22,6 +25,43 @@ API_URL = (
     f"bot{TOKEN}"
 )
 
+STATE_FILE = Path(
+    "telegram_state.json"
+)
+
+
+def load_last_update_id():
+    if not STATE_FILE.exists():
+        return None
+
+    try:
+        data = json.loads(
+            STATE_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        return data.get(
+            "last_update_id"
+        )
+
+    except Exception:
+        return None
+
+
+def save_last_update_id(
+    update_id,
+):
+    STATE_FILE.write_text(
+        json.dumps(
+            {
+                "last_update_id":
+                    update_id
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 def telegram_request(
     method,
@@ -470,13 +510,22 @@ def handle_callback(
         )
 
 
-def get_updates():
+def get_updates(
+    last_update_id=None,
+):
+    params = {
+        "timeout": 0,
+        "limit": 100,
+    }
+
+    if last_update_id is not None:
+        params["offset"] = (
+            last_update_id + 1
+        )
+
     response = requests.get(
         f"{API_URL}/getUpdates",
-        params={
-            "timeout": 0,
-            "limit": 100,
-        },
+        params=params,
         timeout=30,
     )
 
@@ -512,21 +561,43 @@ def main():
             "is missing."
         )
 
-    updates = get_updates()
+    last_processed = (
+        load_last_update_id()
+    )
+
+    print(
+        "Last processed update:",
+        last_processed,
+    )
+
+    updates = get_updates(
+        last_processed
+    )
 
     print(
         "Updates received:",
         len(updates),
     )
 
-    last_update_id = None
-
     for update in updates:
-        last_update_id = (
-            update.get(
-                "update_id"
-            )
+        update_id = update.get(
+            "update_id"
         )
+
+        if update_id is None:
+            continue
+
+        if (
+            last_processed
+            is not None
+            and update_id
+            <= last_processed
+        ):
+            print(
+                "Skipping old update:",
+                update_id,
+            )
+            continue
 
         try:
             if "message" in update:
@@ -544,21 +615,34 @@ def main():
                     ]
                 )
 
+            save_last_update_id(
+                update_id
+            )
+
+            last_processed = (
+                update_id
+            )
+
+            confirm_updates(
+                update_id
+            )
+
+            print(
+                "Processed update:",
+                update_id,
+            )
+
         except Exception as exc:
             print(
                 "Update error:",
                 exc,
             )
 
-    if last_update_id is not None:
-        confirm_updates(
-            last_update_id
-        )
+            # לא ממשיכים הלאה,
+            # כדי שלא נאבד update
+            # שנכשל באמצע.
+            break
 
     print(
         "Telegram check completed."
     )
-
-
-if __name__ == "__main__":
-    main()
