@@ -1,31 +1,26 @@
+import re
 from playwright.sync_api import sync_playwright
 
 
-MOVIE_URL = (
-    "https://www.cinema-city.co.il/movie/6031"
+MOVIE_ID = 6031
+
+BASE_URL = (
+    "https://www.cinema-city.co.il"
 )
 
+MOVIE_URL = (
+    f"{BASE_URL}/movie/{MOVIE_ID}"
+)
 
-KEYWORDS = [
-    "api",
-    "movie",
-    "cinema",
-    "show",
-    "screen",
-    "schedule",
-    "performance",
-    "booking",
-    "ticket",
-]
+THEATERS_URL = (
+    f"{BASE_URL}/tickets/"
+    f"Theaters?MovieId={MOVIE_ID}"
+)
 
-
-def interesting_url(url):
-    lower = url.lower()
-
-    return any(
-        word in lower
-        for word in KEYWORDS
-    )
+JS_URL = (
+    f"{BASE_URL}/js/"
+    "ticketsNew2.js?c=2"
+)
 
 
 def main():
@@ -35,35 +30,13 @@ def main():
         )
 
         context = browser.new_context(
-            locale="he-IL",
-            viewport={
-                "width": 1440,
-                "height": 1200,
-            },
+            locale="he-IL"
         )
 
         page = context.new_page()
 
-        def on_response(response):
-            try:
-                if interesting_url(
-                    response.url
-                ):
-                    print(
-                        "RESPONSE",
-                        response.status,
-                        response.url,
-                    )
-            except Exception:
-                pass
-
-        page.on(
-            "response",
-            on_response,
-        )
-
         print(
-            "Opening Cinema City movie page..."
+            "Opening movie page..."
         )
 
         page.goto(
@@ -72,190 +45,153 @@ def main():
             timeout=90000,
         )
 
-        page.wait_for_timeout(8000)
+        page.wait_for_timeout(3000)
 
         print("\n")
         print("=" * 70)
-        print("FINAL URL")
+        print("THEATERS RESPONSE")
         print("=" * 70)
 
-        print(page.url)
-
-        print("\n")
-        print("=" * 70)
-        print("PAGE TEXT")
-        print("=" * 70)
-
-        try:
-            body = page.locator(
-                "body"
-            ).inner_text()
-
-            print(body[:6000])
-
-        except Exception as exc:
-            print(
-                "Could not read body:",
-                exc,
+        theaters_response = (
+            context.request.get(
+                THEATERS_URL
             )
-
-        print("\n")
-        print("=" * 70)
-        print("SELECT ELEMENTS")
-        print("=" * 70)
-
-        selects = page.locator("select")
+        )
 
         print(
-            "Select count:",
-            selects.count(),
+            "Status:",
+            theaters_response.status,
         )
 
-        for i in range(
-            selects.count()
-        ):
-            try:
-                select = selects.nth(i)
+        print(
+            "Content-Type:",
+            theaters_response.headers.get(
+                "content-type"
+            ),
+        )
 
-                print(
-                    f"\nSELECT {i}"
-                )
+        theaters_text = (
+            theaters_response.text()
+        )
 
-                print(
-                    "name:",
-                    select.get_attribute(
-                        "name"
-                    ),
-                )
-
-                print(
-                    "id:",
-                    select.get_attribute(
-                        "id"
-                    ),
-                )
-
-                options = (
-                    select
-                    .locator("option")
-                )
-
-                for j in range(
-                    min(
-                        options.count(),
-                        30,
-                    )
-                ):
-                    option = options.nth(j)
-
-                    print(
-                        "OPTION:",
-                        repr(
-                            option.inner_text()
-                        ),
-                        "VALUE:",
-                        repr(
-                            option.get_attribute(
-                                "value"
-                            )
-                        ),
-                    )
-
-            except Exception as exc:
-                print(
-                    "Select error:",
-                    exc,
-                )
+        print(theaters_text[:12000])
 
         print("\n")
         print("=" * 70)
-        print("BUTTONS")
+        print("TICKET API ENDPOINTS IN JS")
         print("=" * 70)
 
-        buttons = page.locator(
-            "button"
-        )
-
-        for i in range(
-            min(
-                buttons.count(),
-                80,
+        js_response = (
+            context.request.get(
+                JS_URL
             )
-        ):
-            try:
-                button = buttons.nth(i)
+        )
 
-                text = (
-                    button.inner_text()
-                    .strip()
-                )
+        print(
+            "JS status:",
+            js_response.status,
+        )
 
-                if text:
-                    print(
-                        f"BUTTON {i}:",
-                        repr(text),
-                    )
+        js_text = (
+            js_response.text()
+        )
 
-            except Exception:
-                pass
+        patterns = [
+            r'["\']([^"\']*'
+            r'/tickets/'
+            r'[^"\']*)["\']',
 
-        print("\n")
-        print("=" * 70)
-        print("LINKS")
-        print("=" * 70)
+            r'url\s*:\s*'
+            r'["\']([^"\']+)["\']',
+        ]
 
-        links = page.locator("a")
+        found = set()
 
-        shown = 0
-
-        for i in range(
-            links.count()
-        ):
-            if shown >= 100:
-                break
-
-            try:
-                link = links.nth(i)
-
-                text = (
-                    link.inner_text()
-                    .strip()
-                )
-
-                href = (
-                    link.get_attribute(
-                        "href"
-                    )
-                )
-
-                combined = (
-                    f"{text} {href}"
-                    .lower()
-                )
+        for pattern in patterns:
+            for match in re.findall(
+                pattern,
+                js_text,
+                re.IGNORECASE,
+            ):
+                if isinstance(
+                    match,
+                    tuple,
+                ):
+                    match = match[0]
 
                 if (
-                    text
-                    and (
-                        "הזמ" in text
-                        or "כרטיס" in text
-                        or "שעה" in text
-                        or "תאריך" in text
-                        or interesting_url(
-                            combined
+                    "ticket" in
+                    match.lower()
+                ):
+                    found.add(match)
+
+        print(
+            "\nPossible endpoints:"
+        )
+
+        for item in sorted(found):
+            print(item)
+
+        print("\n")
+        print("=" * 70)
+        print("JS SNIPPETS")
+        print("=" * 70)
+
+        lower = js_text.lower()
+
+        keywords = [
+            "theaters",
+            "dates",
+            "shows",
+            "hours",
+            "movieid",
+            "theaterid",
+        ]
+
+        printed = set()
+
+        for keyword in keywords:
+            start = 0
+
+            while True:
+                pos = lower.find(
+                    keyword,
+                    start,
+                )
+
+                if pos == -1:
+                    break
+
+                snippet = js_text[
+                    max(0, pos - 300):
+                    min(
+                        len(js_text),
+                        pos + 500,
+                    )
+                ]
+
+                if snippet not in printed:
+                    print("\n---")
+                    print(
+                        snippet.replace(
+                            "\n",
+                            " "
                         )
                     )
-                ):
-                    print(
-                        "LINK:",
-                        repr(text),
-                        "HREF:",
-                        repr(href),
+
+                    printed.add(
+                        snippet
                     )
 
-                    shown += 1
+                start = pos + len(
+                    keyword
+                )
 
-            except Exception:
-                pass
+                if len(printed) >= 30:
+                    break
+
+            if len(printed) >= 30:
+                break
 
         print("\n")
         print("=" * 70)
