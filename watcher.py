@@ -9,11 +9,6 @@ from playwright.sync_api import sync_playwright
 
 CINEMA_URL = "https://www.planetcinema.co.il/cinemas/Rishon_Letziyon/1072"
 
-MOVIE_TITLES = [
-    "האודיסאה",
-    "The Odyssey",
-]
-
 STATE_FILE = Path("state.json")
 
 
@@ -44,9 +39,10 @@ def load_state():
         return None
 
     try:
-        return json.loads(
+        data = json.loads(
             STATE_FILE.read_text(encoding="utf-8")
-        ).get("fingerprint")
+        )
+        return data.get("fingerprint")
     except Exception:
         return None
 
@@ -72,164 +68,160 @@ def dismiss_cookies(page):
 
             if button.count() and button.first.is_visible():
                 button.first.click(timeout=3000)
-                page.wait_for_timeout(800)
+                page.wait_for_timeout(700)
                 return
+
         except Exception:
             pass
 
 
-def get_date(body_text):
+def get_date(page):
+    text = page.locator("body").inner_text()
+
     match = re.search(
         r"(?:ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)"
         r"\s+\d{1,2}/\d{1,2}/\d{4}",
-        body_text,
+        text,
     )
 
     if match:
         return match.group(0)
 
-    match = re.search(
-        r"\d{1,2}/\d{1,2}/\d{4}",
-        body_text,
-    )
-
-    return match.group(0) if match else "תאריך לא זוהה"
+    return "תאריך לא זוהה"
 
 
-def is_movie_title_line(lines, index):
-    if index + 1 >= len(lines):
-        return False
+def get_odyssey_container(page):
+    titles = page.get_by_text("האודיסאה", exact=True)
 
-    return bool(
-        re.search(
-            r"\|\s*\d+\s*דקות",
-            lines[index + 1],
-        )
-    )
+    for i in range(titles.count()):
+        try:
+            title = titles.nth(i)
 
+            if not title.is_visible():
+                continue
 
-def get_odyssey_block(body_text):
-    lines = [
-        line.strip()
-        for line in body_text.splitlines()
-        if line.strip()
-    ]
+            handle = title.element_handle()
 
-    start = None
+            if not handle:
+                continue
 
-    for i, line in enumerate(lines):
-        if any(
-            title.lower() == line.lower()
-            for title in MOVIE_TITLES
-        ):
-            start = i
-            break
+            container = page.evaluate_handle(
+                """
+                (el) => {
+                    let current = el;
 
-    if start is None:
-        return None
+                    for (
+                        let level = 0;
+                        level < 12 && current;
+                        level++
+                    ) {
+                        const text =
+                            (current.innerText || "").trim();
 
-    block = []
+                        if (
+                            text.includes("האודיסאה") &&
+                            text.length < 3000 &&
+                            (
+                                text.includes("2DEN") ||
+                                text.toUpperCase().includes("IMAX")
+                            )
+                        ) {
+                            return current;
+                        }
 
-    for i in range(start, len(lines)):
-        if (
-            i > start
-            and is_movie_title_line(lines, i)
-        ):
-            break
+                        current = current.parentElement;
+                    }
 
-        block.append(lines[i])
+                    return null;
+                }
+                """,
+                handle,
+            )
 
-    return block
+            element = container.as_element()
 
+            if element:
+                return element
 
-def looks_like_format(line):
-    upper = line.upper()
-
-    keywords = [
-        "2D",
-        "3D",
-        "IMAX",
-        "VIP",
-        "SCREENX",
-        "4DX",
-    ]
-
-    return any(word in upper for word in keywords)
-
-
-def parse_formats(block):
-    if not block:
-        return []
-
-    results = []
-    current_format = None
-
-    for line in block[2:]:
-        if looks_like_format(line):
-            current_format = line
-
-            results.append({
-                "format": line,
-                "times": [],
-            })
-
+        except Exception:
             continue
 
-        times = re.findall(
-            r"(?:[01]?\d|2[0-3]):[0-5]\d",
-            line,
-        )
-
-        if times and current_format and results:
-            results[-1]["times"].extend(times)
-
-    for result in results:
-        result["times"] = sorted(
-            set(result["times"])
-        )
-
-    return results
+    return None
 
 
-def scan_current_day(page):
-    body_text = page.locator("body").inner_text()
+def get_imax_showings(page):
+    container = get_odyssey_container(page)
 
-    date = get_date(body_text)
-    block = get_odyssey_block(body_text)
+    if not container:
+        print("Odyssey container not found.")
+        return []
 
-    if not block:
-        print(f"{date}: The Odyssey not found.")
-        return {
-            "date": date,
-            "odyssey": False,
-            "formats": [],
+    results = page.evaluate(
+        """
+        (root) => {
+            const links = Array.from(
+                root.querySelectorAll("a[data-url]")
+            );
+
+            return links.map(link => {
+                return {
+                    time:
+                        (link.innerText || "")
+                        .trim()
+                        .match(
+                            /(?:[01]?\\d|2[0-3]):[0-5]\\d/
+                        )?.[0] || null,
+
+                    data_url:
+                        link.getAttribute("data-url"),
+
+                    attrs:
+                        link.getAttribute("data-attrs") || ""
+                };
+            });
         }
+        """,
+        container,
+    )
 
-    formats = parse_formats(block)
+    imax = []
 
-    print("\n============================")
-    print(f"DATE: {date}")
-    print("ODYSSEY BLOCK:")
-    print("\n".join(block))
-    print("PARSED FORMATS:", formats)
-    print("============================\n")
+    for item in results:
+        attrs = item.get("attrs", "").lower()
+        time = item.get("time")
+        url = item.get("data_url")
 
-    return {
-        "date": date,
-        "odyssey": True,
-        "formats": formats,
-    }
+        if (
+            "imax" in attrs
+            and time
+            and url
+        ):
+            imax.append(
+                {
+                    "time": time,
+                    "url": url,
+                }
+            )
+
+    unique = {}
+
+    for item in imax:
+        unique[
+            (item["time"], item["url"])
+        ] = item
+
+    return list(unique.values())
 
 
 def click_day(page, label):
     try:
-        candidates = page.get_by_text(
+        matches = page.get_by_text(
             label,
             exact=True,
         )
 
-        for i in range(candidates.count()):
-            item = candidates.nth(i)
+        for i in range(matches.count()):
+            item = matches.nth(i)
 
             try:
                 if not item.is_visible():
@@ -237,7 +229,6 @@ def click_day(page, label):
 
                 box = item.bounding_box()
 
-                # Date navigation is near the top of the page.
                 if box and box["y"] < 1000:
                     item.click(timeout=5000)
                     page.wait_for_timeout(2500)
@@ -263,7 +254,7 @@ def main():
         == "workflow_dispatch"
     )
 
-    scans = []
+    all_showings = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -286,11 +277,43 @@ def main():
 
         dismiss_cookies(page)
 
-        # Scan the currently selected day first.
-        scans.append(scan_current_day(page))
+        seen_dates = set()
 
-        # Then try all other visible schedule days.
-        day_labels = [
+        def scan():
+            date = get_date(page)
+
+            if date in seen_dates:
+                return
+
+            seen_dates.add(date)
+
+            showings = get_imax_showings(page)
+
+            print(
+                f"{date}: "
+                f"{len(showings)} IMAX showings"
+            )
+
+            for showing in showings:
+                print(
+                    date,
+                    showing["time"],
+                    showing["url"],
+                )
+
+                all_showings.append(
+                    {
+                        "date": date,
+                        "time": showing["time"],
+                        "url": showing["url"],
+                    }
+                )
+
+        # Current day
+        scan()
+
+        # Remaining schedule days
+        for label in [
             "היום",
             "א׳",
             "ב׳",
@@ -299,136 +322,76 @@ def main():
             "ה׳",
             "ו׳",
             "ש׳",
-        ]
-
-        seen_dates = {
-            scans[0]["date"]
-        }
-
-        for label in day_labels:
-            if not click_day(page, label):
-                continue
-
-            result = scan_current_day(page)
-
-            if result["date"] not in seen_dates:
-                scans.append(result)
-                seen_dates.add(result["date"])
+        ]:
+            if click_day(page, label):
+                scan()
 
         browser.close()
 
-    imax_results = []
-    non_imax_results = []
+    all_showings.sort(
+        key=lambda x: (
+            x["date"],
+            x["time"],
+        )
+    )
 
-    for scan in scans:
-        if not scan["odyssey"]:
-            continue
+    print("\nFINAL IMAX SHOWINGS:")
+    print(
+        json.dumps(
+            all_showings,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
-        for item in scan["formats"]:
-            entry = {
-                "date": scan["date"],
-                "format": item["format"],
-                "times": item["times"],
-            }
+    if not all_showings:
+        print("No Odyssey IMAX showings found.")
 
-            if "IMAX" in item["format"].upper():
-                if item["times"]:
-                    imax_results.append(entry)
-            else:
-                non_imax_results.append(entry)
-
-    print("IMAX RESULTS:")
-    print(imax_results)
-
-    print("NON-IMAX RESULTS:")
-    print(non_imax_results)
-
-    if manual_run:
-        if imax_results:
-            parts = []
-
-            for result in imax_results:
-                parts.append(
-                    f"📅 {result['date']}\n"
-                    f"🎞️ {result['format']}\n"
-                    f"🕐 {', '.join(result['times'])}"
-                )
-
+        if manual_run:
             send_telegram(
-                "✅ בדיקת הבוט הצליחה!\n\n"
-                "🎬 נמצאה האודיסאה ב-IMAX "
-                "בפלאנט ראשון לציון!\n\n"
-                + "\n\n".join(parts)
-                + "\n\n🎟️ לצפייה והזמנה:\n"
-                + CINEMA_URL
+                "✅ הבוט פועל.\n\n"
+                "🔎 כרגע לא נמצאו הקרנות IMAX "
+                "של האודיסאה בפלאנט ראשון לציון."
             )
 
-        else:
-            details = []
-
-            for result in non_imax_results:
-                times = (
-                    ", ".join(result["times"])
-                    if result["times"]
-                    else "ללא שעה שזוהתה"
-                )
-
-                details.append(
-                    f"📅 {result['date']}\n"
-                    f"🎞️ {result['format']}\n"
-                    f"🕐 {times}"
-                )
-
-            extra = ""
-
-            if details:
-                extra = (
-                    "\n\nהקרנות אחרות שנמצאו:\n\n"
-                    + "\n\n".join(details)
-                )
-
-            send_telegram(
-                "✅ בדיקת הבוט הצליחה.\n\n"
-                "🔎 האודיסאה נבדקה בלוח ההקרנות "
-                "של פלאנט ראשון לציון.\n"
-                "כרגע לא זוהתה הקרנת IMAX."
-                + extra
-            )
-
-    if not imax_results:
-        print("No Odyssey IMAX screenings detected.")
         return
 
-    fingerprint_data = json.dumps(
-        imax_results,
+    fingerprint_source = json.dumps(
+        all_showings,
         ensure_ascii=False,
         sort_keys=True,
     )
 
     fingerprint = hashlib.sha256(
-        fingerprint_data.encode("utf-8")
+        fingerprint_source.encode("utf-8")
     ).hexdigest()
 
     previous = load_state()
 
-    if (
-        not manual_run
-        and fingerprint != previous
-    ):
-        parts = []
+    parts = []
 
-        for result in imax_results:
-            parts.append(
-                f"📅 {result['date']}\n"
-                f"🕐 {', '.join(result['times'])}"
-            )
+    for showing in all_showings:
+        parts.append(
+            f"📅 {showing['date']}\n"
+            f"🕐 {showing['time']}\n"
+            f"🎟️ {showing['url']}"
+        )
 
+    message = (
+        "🎬 האודיסאה — IMAX ראשון לציון\n\n"
+        + "\n\n".join(parts)
+    )
+
+    if manual_run:
         send_telegram(
-            "🚨 נמצאה הקרנת IMAX חדשה "
-            "של האודיסאה בראשון לציון!\n\n"
-            + "\n\n".join(parts)
-            + "\n\n🎟️ להזמנה:\n"
-            + CINEMA_URL
+            "✅ בדיקת הבוט הצליחה!\n\n"
+            + message
+        )
+
+    elif fingerprint != previous:
+        send_telegram(
+            "🚨 נמצאה הקרנת IMAX חדשה!\n\n"
+            + message
         )
 
     if fingerprint != previous:
