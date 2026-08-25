@@ -1,0 +1,51 @@
+name: Planet IMAX Watcher
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: |
+          pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Check Planet IMAX
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python watcher.py
+
+      - name: Save watcher state
+        run: |
+          if [ -f state.json ]; then
+            git config user.name "planet-imax-watcher"
+            git config user.email "github-actions@users.noreply.github.com"
+            git add state.json
+
+            if ! git diff --cached --quiet; then
+              git commit -m "Update watcher state"
+              git push
+            fi
+          fi
