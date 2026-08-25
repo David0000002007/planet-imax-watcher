@@ -646,3 +646,6 @@ def main():
     print(
         "Telegram check completed."
     )
+    
+if __name__ == "__main__":
+    main()
