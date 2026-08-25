@@ -1,26 +1,21 @@
-import re
+import json
 from playwright.sync_api import sync_playwright
 
 
+BASE_URL = "https://www.cinema-city.co.il"
+
+# האודיסאה משמשת רק כסרט בדיקה
 MOVIE_ID = 6031
 
-BASE_URL = (
-    "https://www.cinema-city.co.il"
-)
 
-MOVIE_URL = (
-    f"{BASE_URL}/movie/{MOVIE_ID}"
-)
-
-THEATERS_URL = (
-    f"{BASE_URL}/tickets/"
-    f"Theaters?MovieId={MOVIE_ID}"
-)
-
-JS_URL = (
-    f"{BASE_URL}/js/"
-    "ticketsNew2.js?c=2"
-)
+def pretty(value):
+    print(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 def main():
@@ -33,170 +28,176 @@ def main():
             locale="he-IL"
         )
 
-        page = context.new_page()
-
-        print(
-            "Opening movie page..."
-        )
-
-        page.goto(
-            MOVIE_URL,
-            wait_until="domcontentloaded",
-            timeout=90000,
-        )
-
-        page.wait_for_timeout(3000)
-
-        print("\n")
         print("=" * 70)
-        print("THEATERS RESPONSE")
+        print("GET THEATERS")
         print("=" * 70)
 
         theaters_response = (
             context.request.get(
-                THEATERS_URL
+                f"{BASE_URL}/tickets/Theaters",
+                params={
+                    "MovieId": MOVIE_ID
+                },
             )
         )
 
-        print(
-            "Status:",
-            theaters_response.status,
+        theaters = (
+            theaters_response.json()
         )
 
-        print(
-            "Content-Type:",
-            theaters_response.headers.get(
-                "content-type"
-            ),
-        )
+        # כרגע נבדוק רק בתי קולנוע רגילים,
+        # בלי VIP / Prime / ONYX.
+        base_theaters = [
+            theater
+            for theater in theaters
+            if theater.get(
+                "VenueTypeId"
+            ) == 1
+        ]
 
-        theaters_text = (
-            theaters_response.text()
-        )
-
-        print(theaters_text[:12000])
-
-        print("\n")
-        print("=" * 70)
-        print("TICKET API ENDPOINTS IN JS")
-        print("=" * 70)
-
-        js_response = (
-            context.request.get(
-                JS_URL
+        for theater in base_theaters:
+            print(
+                theater["Name"],
+                "| Id:",
+                theater["Id"],
+                "| TixTheatreId:",
+                theater["TixTheatreId"],
             )
-        )
-
-        print(
-            "JS status:",
-            js_response.status,
-        )
-
-        js_text = (
-            js_response.text()
-        )
-
-        patterns = [
-            r'["\']([^"\']*'
-            r'/tickets/'
-            r'[^"\']*)["\']',
-
-            r'url\s*:\s*'
-            r'["\']([^"\']+)["\']',
-        ]
-
-        found = set()
-
-        for pattern in patterns:
-            for match in re.findall(
-                pattern,
-                js_text,
-                re.IGNORECASE,
-            ):
-                if isinstance(
-                    match,
-                    tuple,
-                ):
-                    match = match[0]
-
-                if (
-                    "ticket" in
-                    match.lower()
-                ):
-                    found.add(match)
-
-        print(
-            "\nPossible endpoints:"
-        )
-
-        for item in sorted(found):
-            print(item)
 
         print("\n")
         print("=" * 70)
-        print("JS SNIPPETS")
+        print("TEST EVENTS")
         print("=" * 70)
 
-        lower = js_text.lower()
+        successful = []
 
-        keywords = [
-            "theaters",
-            "dates",
-            "shows",
-            "hours",
-            "movieid",
-            "theaterid",
-        ]
+        for theater in base_theaters:
+            name = theater["Name"]
 
-        printed = set()
+            print("\n")
+            print("-" * 70)
+            print(name)
+            print("-" * 70)
 
-        for keyword in keywords:
-            start = 0
+            # Cinema City משתמש בכמה סוגי IDs.
+            # נבדוק את שניהם בלי לנחש.
+            candidates = [
+                (
+                    "TixTheatreId",
+                    theater["TixTheatreId"],
+                ),
+                (
+                    "Id",
+                    theater["Id"],
+                ),
+            ]
 
-            while True:
-                pos = lower.find(
-                    keyword,
-                    start,
-                )
+            found = False
 
-                if pos == -1:
-                    break
-
-                snippet = js_text[
-                    max(0, pos - 300):
-                    min(
-                        len(js_text),
-                        pos + 500,
-                    )
-                ]
-
-                if snippet not in printed:
-                    print("\n---")
-                    print(
-                        snippet.replace(
-                            "\n",
-                            " "
+            for id_type, theater_id in candidates:
+                try:
+                    response = (
+                        context.request.get(
+                            f"{BASE_URL}/tickets/Events",
+                            params={
+                                "TheatreId":
+                                    theater_id,
+                                "MovieId":
+                                    MOVIE_ID,
+                            },
                         )
                     )
 
-                    printed.add(
-                        snippet
+                    print(
+                        f"{id_type}={theater_id}"
                     )
 
-                start = pos + len(
-                    keyword
+                    print(
+                        "HTTP:",
+                        response.status,
+                    )
+
+                    try:
+                        data = response.json()
+                    except Exception:
+                        text = response.text()
+
+                        print(
+                            "Not JSON:"
+                        )
+
+                        print(
+                            text[:500]
+                        )
+
+                        continue
+
+                    if isinstance(
+                        data,
+                        list,
+                    ):
+                        print(
+                            "Result length:",
+                            len(data),
+                        )
+                    else:
+                        print(
+                            "Result type:",
+                            type(data).__name__,
+                        )
+
+                    if data:
+                        print(
+                            "SUCCESS - DATA FOUND"
+                        )
+
+                        pretty(data)
+
+                        successful.append(
+                            {
+                                "theater":
+                                    name,
+                                "id_type":
+                                    id_type,
+                                "theater_id":
+                                    theater_id,
+                                "data":
+                                    data,
+                            }
+                        )
+
+                        found = True
+                        break
+
+                except Exception as exc:
+                    print(
+                        "Request error:",
+                        exc,
+                    )
+
+            if not found:
+                print(
+                    "No events returned."
                 )
 
-                if len(printed) >= 30:
-                    break
-
-            if len(printed) >= 30:
-                break
-
-        print("\n")
+        print("\n\n")
         print("=" * 70)
-        print("DONE")
+        print("SUMMARY")
         print("=" * 70)
+
+        print(
+            "Theaters with events:",
+            len(successful),
+        )
+
+        for item in successful:
+            print(
+                item["theater"],
+                "|",
+                item["id_type"],
+                "=",
+                item["theater_id"],
+            )
 
         browser.close()
 
