@@ -4,17 +4,22 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://www.cinema-city.co.il"
 
-# האודיסאה משמשת רק כסרט בדיקה
-MOVIE_ID = 6031
+# רק טקסט בדיקה.
+# בהמשך זה יגיע ישירות מהודעת Telegram.
+MOVIE_QUERY = "האודיסאה"
 
 
-def pretty(value):
-    print(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            indent=2,
-        )
+def normalize(text):
+    if not text:
+        return ""
+
+    return (
+        str(text)
+        .strip()
+        .lower()
+        .replace('"', "")
+        .replace("'", "")
+        .replace("-", " ")
     )
 
 
@@ -29,175 +34,126 @@ def main():
         )
 
         print("=" * 70)
-        print("GET THEATERS")
+        print("MOVIES API")
         print("=" * 70)
 
-        theaters_response = (
-            context.request.get(
-                f"{BASE_URL}/tickets/Theaters",
-                params={
-                    "MovieId": MOVIE_ID
-                },
-            )
+        response = context.request.get(
+            f"{BASE_URL}/tickets/Movies"
         )
 
-        theaters = (
-            theaters_response.json()
+        print(
+            "HTTP:",
+            response.status,
         )
 
-        # כרגע נבדוק רק בתי קולנוע רגילים,
-        # בלי VIP / Prime / ONYX.
-        base_theaters = [
-            theater
-            for theater in theaters
-            if theater.get(
-                "VenueTypeId"
-            ) == 1
-        ]
+        print(
+            "Content-Type:",
+            response.headers.get(
+                "content-type"
+            ),
+        )
 
-        for theater in base_theaters:
+        try:
+            movies = response.json()
+
+        except Exception:
             print(
-                theater["Name"],
-                "| Id:",
-                theater["Id"],
-                "| TixTheatreId:",
-                theater["TixTheatreId"],
+                "Response was not JSON:"
+            )
+
+            print(
+                response.text()[:3000]
+            )
+
+            browser.close()
+            return
+
+        print(
+            "Result type:",
+            type(movies).__name__,
+        )
+
+        if isinstance(movies, list):
+            print(
+                "Movie count:",
+                len(movies),
             )
 
         print("\n")
         print("=" * 70)
-        print("TEST EVENTS")
+        print("SAMPLE MOVIES")
         print("=" * 70)
 
-        successful = []
-
-        for theater in base_theaters:
-            name = theater["Name"]
-
-            print("\n")
-            print("-" * 70)
-            print(name)
-            print("-" * 70)
-
-            # Cinema City משתמש בכמה סוגי IDs.
-            # נבדוק את שניהם בלי לנחש.
-            candidates = [
-                (
-                    "TixTheatreId",
-                    theater["TixTheatreId"],
-                ),
-                (
-                    "Id",
-                    theater["Id"],
-                ),
-            ]
-
-            found = False
-
-            for id_type, theater_id in candidates:
-                try:
-                    response = (
-                        context.request.get(
-                            f"{BASE_URL}/tickets/Events",
-                            params={
-                                "TheatreId":
-                                    theater_id,
-                                "MovieId":
-                                    MOVIE_ID,
-                            },
-                        )
-                    )
-
-                    print(
-                        f"{id_type}={theater_id}"
-                    )
-
-                    print(
-                        "HTTP:",
-                        response.status,
-                    )
-
-                    try:
-                        data = response.json()
-                    except Exception:
-                        text = response.text()
-
-                        print(
-                            "Not JSON:"
-                        )
-
-                        print(
-                            text[:500]
-                        )
-
-                        continue
-
-                    if isinstance(
-                        data,
-                        list,
-                    ):
-                        print(
-                            "Result length:",
-                            len(data),
-                        )
-                    else:
-                        print(
-                            "Result type:",
-                            type(data).__name__,
-                        )
-
-                    if data:
-                        print(
-                            "SUCCESS - DATA FOUND"
-                        )
-
-                        pretty(data)
-
-                        successful.append(
-                            {
-                                "theater":
-                                    name,
-                                "id_type":
-                                    id_type,
-                                "theater_id":
-                                    theater_id,
-                                "data":
-                                    data,
-                            }
-                        )
-
-                        found = True
-                        break
-
-                except Exception as exc:
-                    print(
-                        "Request error:",
-                        exc,
-                    )
-
-            if not found:
+        if isinstance(movies, list):
+            for movie in movies[:10]:
                 print(
-                    "No events returned."
+                    json.dumps(
+                        movie,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
                 )
 
-        print("\n\n")
+        print("\n")
         print("=" * 70)
-        print("SUMMARY")
+        print("SEARCH RESULT")
         print("=" * 70)
 
-        print(
-            "Theaters with events:",
-            len(successful),
+        query = normalize(
+            MOVIE_QUERY
         )
 
-        for item in successful:
+        matches = []
+
+        if isinstance(movies, list):
+            for movie in movies:
+                # אנחנו עדיין לא יודעים
+                # בדיוק איך Cinema City
+                # קורא לשדה שם הסרט,
+                # אז מחפשים בכל הערכים
+                # הטקסטואליים.
+                searchable = " ".join(
+                    normalize(value)
+                    for value
+                    in movie.values()
+                    if isinstance(
+                        value,
+                        (
+                            str,
+                            int,
+                            float,
+                        ),
+                    )
+                )
+
+                if query in searchable:
+                    matches.append(movie)
+
+        print(
+            "Query:",
+            MOVIE_QUERY,
+        )
+
+        print(
+            "Matches:",
+            len(matches),
+        )
+
+        for movie in matches[:20]:
+            print("\nMATCH:")
+
             print(
-                item["theater"],
-                "|",
-                item["id_type"],
-                "=",
-                item["theater_id"],
+                json.dumps(
+                    movie,
+                    ensure_ascii=False,
+                    indent=2,
+                )
             )
+
+        print("\n")
+        print("=" * 70)
+        print("DONE")
+        print("=" * 70)
 
         browser.close()
 
