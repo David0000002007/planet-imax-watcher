@@ -2,6 +2,10 @@ name: Cinema Telegram Bot
 
 on:
   workflow_dispatch:
+  
+concurrency:
+  group: cinema-telegram-bot
+  cancel-in-progress: false
 
 jobs:
   telegram:
